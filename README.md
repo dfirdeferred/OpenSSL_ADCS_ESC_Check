@@ -209,6 +209,55 @@ Maintain an org-specific privileged identity regex and danger OID list.
 
 Automate periodic scans; diff results and alert on new flags.
 
+## Certificate Locations
+
+|                  Active Directory (Windows)           |
+|-------------------------------------------------------|
+| Certificate Templates:                                |
+|  CN=Certificate Templates,                            |
+|  CN=Public Key Services,                              |
+|  CN=Services,                                         |
+|  CN=Configuration,DC=<domain>,DC=<tld>                |
+
+
+|        Windows Certificate Stores (Logical)           |
+|-------------------------------------------------------|
+| Cert:\CurrentUser\My         - User Personal Certs    |
+| Cert:\CurrentUser\Root       - User Trusted Roots     |
+| Cert:\LocalMachine\My        - Machine Personal Certs |
+| Cert:\LocalMachine\Root      - Machine Trusted Roots  |
+| Cert:\LocalMachine\CA        - Intermediate CAs       |
+| Cert:\LocalMachine\TrustedPublisher                   |
+| Cert:\LocalMachine\AuthRoot  - Enterprise Trust       |
+
+|       Windows Physical Storage Locations              |
+|-------------------------------------------------------|
+| Registry:                                             |
+|  HKCU\Software\Microsoft\SystemCertificates\          |
+|  HKLM\SOFTWARE\Microsoft\SystemCertificates\          |
+|  HKLM\SOFTWARE\Policies\Microsoft\SystemCertificates\ |
+|                                                       |
+| File system:                                          |
+|  %APPDATA%\Microsoft\SystemCertificates\              |
+|  %USERPROFILE%\AppData\Roaming\Microsoft\...          |
+|  %ProgramData%\Microsoft\SystemCertificates\          |
+
+|                  Linux (Debian/Ubuntu)                |
+|-------------------------------------------------------|
+| System CA Store: /etc/ssl/certs/                      |
+| Bundle:          /etc/ssl/certs/ca-certificates.crt   |
+
+|                 Linux (RHEL/CentOS/Fedora)            |
+|-------------------------------------------------------|
+| System CA Store: /etc/pki/ca-trust/source/anchors/    |
+| Bundle:          /etc/pki/tls/certs/ca-bundle.crt     |
+
+| Service-specific:                                     |
+|-------------------------------------------------------|
+|  Apache: /etc/apache2/ssl/ or /etc/httpd/conf/ssl.crt |
+|  Nginx:  /etc/nginx/ssl/                              |
+|  OpenVPN: /etc/openvpn/server/                        |
+| User:    ~/.pki/nssdb/, ~/.mozilla/.../cert9.db       |
 
 
 
