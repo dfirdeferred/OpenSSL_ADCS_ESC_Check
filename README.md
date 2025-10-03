@@ -1,8 +1,4 @@
-# OpenSSL_ADCS_ESC_Check
-Use only OpenSSL to Heuristically detect ADCS vulnerabilities evidence for ESC1, ESC3, ESC6, ESC9, ESC10, ESC13, ESC15 by inspecting issued certificates (PEM/DER).
-
-# AD CS ESC Indicator Scanners
-
+# ADCS ESCalation Indicator Scanners
 Tools for triaging issued X.509 certificates for evidence of **AD CS misconfigurations** related to **ESC1, ESC3, ESC6, ESC9, ESC10, ESC13, ESC15**.
 
 - **Scripts**:  
@@ -46,61 +42,84 @@ Tools for triaging issued X.509 certificates for evidence of **AD CS misconfigur
 
 ## Quick start
 
-```bash
-# Bash scanner
-chmod +x esc_check.sh
-./esc_check.sh ./certs
 
-# Python scanner
-python3 esc_check.py ./certs
+**Bash scanner**
+`chmod +x esc_check.sh`
 
-# Command-line options
+`./esc_check.sh ./certs`
+
+**Python scanner**
+`python3 esc_check.py ./certs`
+
+**Command-line options**
 Bash — esc_check.sh
+
 Usage: ./esc_check.sh [--danger-oids FILE] [--priv-pattern 'regex'] [--evidence] [--evidence-html out.html] <file-or-dir> [...]
 
---danger-oids FILE     File with one OID per line (flags ESC13 when matched)
---priv-pattern REGEX   Regex for privileged-looking identities (default matches Administrator, krbtgt, Domain Admins, etc.)
---evidence             Print exact blocks that triggered findings
---evidence-html FILE   Write a styled HTML report (self-contained)
+      --danger-oids FILE     File with one OID per line (flags ESC13 when matched)
+      
+      --priv-pattern REGEX   Regex for privileged-looking identities (default matches Administrator, krbtgt, Domain Admins, etc.)
+      
+      --evidence             Print exact blocks that triggered findings
+      
+      --evidence-html FILE   Write a styled HTML report (self-contained)
 
-# Python — esc_check.py
+**Python — esc_check.py**
 Usage: python3 esc_check.py [--danger-oids FILE] [--priv-pattern REGEX] [--json] [--evidence] [--evidence-html out.html] <file-or-dir> [...]
 
---danger-oids FILE     File with one OID per line (flags ESC13 when matched)
---priv-pattern REGEX   Regex for privileged-looking identities (default provided)
---json                 Emit JSON (suppresses human formatting unless also writing HTML)
---evidence             Include exact evidence blocks in CLI output
---evidence-html FILE   Write a styled HTML report (self-contained)
+      --danger-oids FILE     File with one OID per line (flags ESC13 when matched)
+      
+      --priv-pattern REGEX   Regex for privileged-looking identities (default provided)
+      
+      --json                 Emit JSON (suppresses human formatting unless also writing HTML)
+      
+      --evidence             Include exact evidence blocks in CLI output
+      
+      --evidence-html FILE   Write a styled HTML report (self-contained)
 
-# Examples
-## A) Basic scan (folder)
-./esc_check.sh ./certs
-python3 esc_check.py ./certs
+## Examples
+**A) Basic scan (folder)**
 
-## B) Add “dangerous” policy OIDs (ESC13)
-Create esc13_oids.txt:
-# OIDs mapped (in your AD) to privileged groups:
-1.2.3.4.5.6
-1.2.840.113556.1.8000.2554.1
+`./esc_check.sh ./certs`
 
-## Run:
-./esc_check.sh --danger-oids esc13_oids.txt ./certs
-python3 esc_check.py --danger-oids esc13_oids.txt ./certs
+`python3 esc_check.py ./certs`
 
-## C) Tighten privileged identity regex (ESC10/ESC1 suspected)
-./esc_check.sh --priv-pattern 'UPN=.*(admin@corp\.local|da@corp\.local)' ./certs
-python3 esc_check.py --priv-pattern 'UPN=.*(admin@corp\.local|da@corp\.local)' ./certs
+**B) Add “dangerous” policy OIDs (ESC13)**
 
-## D) Evidence + HTML report
-./esc_check.sh --evidence --evidence-html report.html ./certs
-python3 esc_check.py --evidence --evidence-html report.html ./certs
+Create esc13_oids.txt
 
-## E) JSON output (for automation)
-python3 esc_check.py --json ./certs > findings.json
+**OIDs mapped (in your AD) to privileged groups:**
+- 1.2.3.4.5.6
+
+- 1.2.840.113556.1.8000.2554.1
+
+**Run:**
+
+`./esc_check.sh --danger-oids esc13_oids.txt ./certs`
+
+`python3 esc_check.py --danger-oids esc13_oids.txt ./certs`
+
+**C) Tighten privileged identity regex (ESC10/ESC1 suspected)**
+
+`./esc_check.sh --priv-pattern 'UPN=.*(admin@corp\.local|da@corp\.local)' ./certs`
+
+`python3 esc_check.py --priv-pattern 'UPN=.*(admin@corp\.local|da@corp\.local)' ./certs`
+
+**D) Evidence + HTML report**
+`./esc_check.sh --evidence --evidence-html report.html ./certs`
+
+`python3 esc_check.py --evidence --evidence-html report.html ./certs`
+
+**E) JSON output (for automation)**
+
+`python3 esc_check.py --json ./certs > findings.json`
 
 ## Output & interpretation
+
 CLI (abbreviated)
+
 [./certs/user.cer]
+
   Subject: CN=NormalUser, OU=Corp, DC=corp, DC=local
   Policy OIDs: 1.2.3.4.5.6
   Flags: ESC6, ESC13
@@ -128,38 +147,45 @@ HTML report (--evidence-html): one card per certificate with the same evidence �
 
 
 # Handy OpenSSL snippets
-# SAN block
-openssl x509 -in file.crt -text -noout | sed -n '/Subject Alternative Name/,+3p'
+**SAN Read**
 
-# EKUs
-openssl x509 -in file.crt -text -noout | sed -n '/Extended Key Usage/,+2p'
+`openssl x509 -in file.crt -text -noout | sed -n '/Subject Alternative Name/,+3p'`
 
-# Certificate Policies (for ESC13 review)
-openssl x509 -in file.crt -text -noout | sed -n '/Certificate Policies/,+12p'
+**EKUs**
 
-# Any Purpose EKU (ESC2 context)
-openssl x509 -in file.crt -text -noout | grep -Ei "Any Purpose|2\.5\.29\.37\.0"
+`openssl x509 -in file.crt -text -noout | sed -n '/Extended Key Usage/,+2p'`
 
-# Application Policies (ESC15)
-openssl x509 -in file.crt -text -noout | grep -A3 "1\.3\.6\.1\.4\.1\.311\.21\.10"
+**Certificate Policies (for ESC13 review)**
 
-# Windows usage notes
+`openssl x509 -in file.crt -text -noout | sed -n '/Certificate Policies/,+12p'`
+
+**Any Purpose EKU (ESC2 context)**
+
+`openssl x509 -in file.crt -text -noout | grep -Ei "Any Purpose|2\.5\.29\.37\.0"`
+
+**Application Policies (ESC15)**
+
+`openssl x509 -in file.crt -text -noout | grep -A3 "1\.3\.6\.1\.4\.1\.311\.21\.10"`
+
+## Windows usage notes
 
 Bash script: run via WSL or Git Bash
 
-Python script: run in PowerShell/CMD (ensure openssl.exe is in PATH)
+Python script: (ensure openssl.exe is in PATH)
 
 Export certs from Windows stores (certmgr.msc) as Base-64 or DER
 
 ## Troubleshooting
 
 “Not a readable certificate (PEM/DER)”
+
 Convert and retry:
 
-openssl x509 -in file.cer -inform der -out file.pem
+`openssl x509 -in file.cer -inform der -out file.pem`
 
 
-No flags, but still suspicious
+No flags, but still suspicious:
+
 Some ESCs are configuration-driven; investigate AD CS templates, CA settings, and DC certificate mapping.
 
 ## Example files
