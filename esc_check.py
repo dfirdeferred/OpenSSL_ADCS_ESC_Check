@@ -3,10 +3,13 @@ import argparse, re, subprocess, json
 from pathlib import Path
 from html import escape
 
+# OIDs
 OID_UPN = "1.3.6.1.4.1.311.20.2.3"
 OID_REQUEST_AGENT = "1.3.6.1.4.1.311.20.2.1"
 OID_APP_POLICIES = "1.3.6.1.4.1.311.21.10"
 OID_CLIENTAUTH = "1.3.6.1.5.5.7.3.2"
+OID_ANY_PURPOSE = "2.5.29.37.0"
+
 PRIV_REGEX_DEFAULT = r"(CN=Administrator|CN=krbtgt|Domain Admins|Enterprise Admins|UPN=.*admin@|svc-.*-admin)"
 
 def openssl_dump(cert_path: Path) -> str:
@@ -48,23 +51,20 @@ def grab_block(text: str, start_marker: str, span: int = 12) -> str:
 
 def analyze_cert(text, priv_regex, danger_oids, evidence=False):
     res = {
-        "ESC1_suspected": False, "ESC3": False, "ESC6": False, "ESC9": False,
-        "ESC10_suspected": False, "ESC13": [], "ESC15": False,
+        "ESC1_suspected": False, "ESC2": False, "ESC3": False, "ESC6": False,
+        "ESC9": False, "ESC10_suspected": False, "ESC13": [], "ESC15": False,
         "subject": "", "policy_oids_found": [], "notes": []
     }
     ev = {}
+
+    # Subject
     for line in text.splitlines():
         if line.strip().startswith("Subject:"):
             res["subject"] = line.strip()
             if evidence: ev["subject"] = line.strip()
             break
 
-    has_upn = (OID_UPN in text)
-    has_request_agent = (OID_REQUEST_AGENT in text)
-    has_eku = ("Extended Key Usage" in text)
-    has_app_policies = (OID_APP_POLICIES in text)
-    has_clientauth_anywhere = (OID_CLIENTAUTH in text)
-
+    # Blocks
     san_block = grab_block(text, "Subject Alternative Name", span=6)
     eku_block = grab_block(text, "Extended Key Usage", span=4)
     pol_block = grab_block(text, "Certificate Policies", span=12)
@@ -76,28 +76,59 @@ def analyze_cert(text, priv_regex, danger_oids, evidence=False):
         if pol_block: ev["policies_block"] = pol_block
         if app_pol_block: ev["app_policies_block"] = app_pol_block
 
+    # Simple presence booleans
+    has_upn = (OID_UPN in text)
+    has_request_agent = (OID_REQUEST_AGENT in text)
+    has_app_policies = (OID_APP_POLICIES in text)
+    has_clientauth_anywhere = (OID_CLIENTAUTH in text)
+    has_eku = ("Extended Key Usage" in text)
+    any_purpose = ("Any Purpose" in eku_block) or (OID_ANY_PURPOSE in eku_block)
+
+    # ESC2: Any Purpose EKU OR missing EKU
+    if any_purpose:
+        res["ESC2"] = True
+        res["notes"].append(f"ESC2: Any Purpose EKU present ({OID_ANY_PURPOSE}).")
+    elif not has_eku:
+        res["ESC2"] = True
+        res["ESC9"] = True
+        res["notes"].append("ESC2/ESC9: No EKU present → implicitly any purpose.")
+
+    # ESC3
+    if has_request_agent:
+        res["ESC3"] = True
+        res["notes"].append("ESC3: Request Agent EKU present.")
+
+    # ESC6
+    if has_upn:
+        res["ESC6"] = True
+        res["notes"].append("ESC6: UPN SAN present.")
+
+    # ESC10 suspected (privileged-looking identities)
+    if re.search(priv_regex, text, flags=re.IGNORECASE):
+        res["ESC10_suspected"] = True
+        res["notes"].append("ESC10?: Subject/SAN matches privileged pattern.")
+
+    # ESC1 suspected (privileged UPN + assumption template allowed SAN)
+    if has_upn and res["ESC10_suspected"]:
+        res["ESC1_suspected"] = True
+        res["notes"].append("ESC1?: Privileged UPN present; enrollee-supplied SAN likely.")
+
+    # ESC13 (policy OIDs vs danger list)
     policy_oids = sorted(set(re.findall(r"(\d+(?:\.\d+)+)", pol_block)))
     res["policy_oids_found"] = policy_oids
-    priv_hit = re.search(priv_regex, text, flags=re.IGNORECASE) is not None
-
-    if has_request_agent:
-        res["ESC3"] = True; res["notes"].append("ESC3: Request Agent EKU present.")
-    if has_upn:
-        res["ESC6"] = True; res["notes"].append("ESC6: UPN SAN present.")
-    if not has_eku:
-        res["ESC9"] = True; res["notes"].append("ESC9: No EKU present (implicitly any purpose).")
-    if priv_hit:
-        res["ESC10_suspected"] = True; res["notes"].append("ESC10?: Subject/SAN matches privileged pattern.")
-    if has_upn and priv_hit:
-        res["ESC1_suspected"] = True; res["notes"].append("ESC1?: Privileged UPN present; enrollee-supplied SAN likely.")
     if policy_oids:
         risky = [oid for oid in policy_oids if oid in danger_oids]
         if risky:
-            res["ESC13"] = risky; res["notes"].append("ESC13: Dangerous policy OIDs present: " + ", ".join(risky))
-    if has_app_policies and has_clientauth_anywhere:
-        res["ESC15"] = True; res["notes"].append("ESC15: Application Policies present with clientAuth.")
+            res["ESC13"] = risky
+            res["notes"].append("ESC13: Dangerous policy OIDs present: " + ", ".join(risky))
 
-    if evidence: res["evidence"] = ev
+    # ESC15
+    if has_app_policies and has_clientauth_anywhere:
+        res["ESC15"] = True
+        res["notes"].append("ESC15: Application Policies present with clientAuth.")
+
+    if evidence:
+        res["evidence"] = ev
     return res
 
 def render_html(results, outfile):
@@ -135,7 +166,7 @@ pre{background:#0b1020;color:#e2e8f0;padding:12px;border-radius:8px;overflow:aut
             if pols: f.write(f'<div class="kv"><strong>Policy OIDs:</strong> {escape(", ".join(pols))}</div>')
 
             flags = []
-            for k in ["ESC1_suspected","ESC3","ESC6","ESC9","ESC10_suspected","ESC15"]:
+            for k in ["ESC1_suspected","ESC2","ESC3","ESC6","ESC9","ESC10_suspected","ESC15"]:
                 if res.get(k): flags.append(k)
             if res.get("ESC13"): flags.append("ESC13(" + ",".join(res["ESC13"]) + ")")
             if flags:
@@ -161,7 +192,7 @@ pre{background:#0b1020;color:#e2e8f0;padding:12px;border-radius:8px;overflow:aut
         f.write("</body></html>")
 
 def main():
-    ap = argparse.ArgumentParser(description="Scan certs for AD CS ESC indicators (1-3,6,9,10,13,15).")
+    ap = argparse.ArgumentParser(description="Scan certs for AD CS ESC indicators (1-3,6,9,10,13,15 + ESC2).")
     ap.add_argument("paths", nargs="+", help="Cert file(s) or directory(ies).")
     ap.add_argument("--danger-oids", default="", help="File with one OID per line to flag for ESC13.")
     ap.add_argument("--priv-pattern", default=PRIV_REGEX_DEFAULT, help="Regex for privileged-looking identities.")
@@ -180,6 +211,10 @@ def main():
             continue
         results[str(f)] = analyze_cert(dump, args.priv_pattern, danger_oids, evidence=(args.evidence or args.evidence_html))
 
+    if args.evidence_html:
+        render_html(results, args.evidence_html)
+        print(f"HTML report written to: {args.evidence_html}")
+
     if args.json and not args.evidence_html:
         print(json.dumps(results, indent=2))
     else:
@@ -192,15 +227,15 @@ def main():
             if res.get("policy_oids_found"):
                 print("  Policy OIDs:", ", ".join(res["policy_oids_found"]))
             flags = []
-            for k in ["ESC1_suspected","ESC3","ESC6","ESC9","ESC10_suspected","ESC15"]:
+            for k in ["ESC1_suspected","ESC2","ESC3","ESC6","ESC9","ESC10_suspected","ESC15"]:
                 if res.get(k): flags.append(k)
             if res.get("ESC13"):
                 flags.append("ESC13(" + ",".join(res["ESC13"]) + ")")
             print("  Flags:", ", ".join(flags) if flags else "None")
             for n in res.get("notes", []):
                 print("   -", n)
-            if args.evidence:
-                ev = res.get("evidence", {})
+            if args.evidence and "evidence" in res:
+                ev = res["evidence"]
                 if ev:
                     print("  Evidence:")
                     for k in ["subject","san_block","eku_block","policies_block","app_policies_block"]:
@@ -208,10 +243,6 @@ def main():
                             print(f"    [{k}]")
                             for line in ev[k].splitlines():
                                 print("      " + line)
-
-    if args.evidence_html:
-        render_html(results, args.evidence_html)
-        print(f"\nHTML report written to: {args.evidence_html}")
 
 if __name__ == "__main__":
     main()
