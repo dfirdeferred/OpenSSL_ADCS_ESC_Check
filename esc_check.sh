@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# OIDs
 OID_UPN="1.3.6.1.4.1.311.20.2.3"           # UPN SAN
 OID_REQUEST_AGENT="1.3.6.1.4.1.311.20.2.1" # Certificate Request Agent EKU
 OID_APP_POLICIES="1.3.6.1.4.1.311.21.10"   # Microsoft Application Policies
 OID_CLIENTAUTH="1.3.6.1.5.5.7.3.2"         # clientAuth EKU
+OID_ANY_PURPOSE="2.5.29.37.0"              # Any Purpose EKU (ESC2)
+
 PRIV_REGEX_DEFAULT="(CN=Administrator|CN=krbtgt|Domain Admins|Enterprise Admins|UPN=.*admin@|svc-.*-admin)"
 
 DANGER_OIDS_FILE=""
@@ -16,13 +19,13 @@ usage() {
   cat <<EOF
 Usage: $0 [--danger-oids FILE] [--priv-pattern 'regex'] [--evidence] [--evidence-html out.html] <file-or-dir> [...]
 
-Scans X.509 certs (PEM/DER) for ESC indicators: 1-3,6,9,10,13,15
+Scans X.509 certs (PEM/DER) for ESC indicators: 1-3,6,9,10,13,15 (+ESC2)
 
 Options:
-  --danger-oids FILE     File with one OID per line to flag for ESC13 (policy OIDs).
-  --priv-pattern REGEX   Regex for privileged-looking identities (default shown in script).
-  --evidence             Print exact blocks (Subject, SAN, EKU, Policies, App Policies).
-  --evidence-html FILE   Write a styled HTML report with the same evidence.
+  --danger-oids FILE   File with one OID per line to flag for ESC13.
+  --priv-pattern REGEX Regex marking privileged-looking identities.
+  --evidence           Print exact lines/blocks that triggered findings.
+  --evidence-html FILE Write a styled HTML report with the same evidence.
 EOF
 }
 
@@ -41,8 +44,6 @@ emit_html_start() {
   .kv{margin:4px 0}
   pre{background:#0b1020;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto}
   .note{color:#334155;font-size:13px;margin:6px 0}
-  .warn{color:#b45309}
-  .ok{color:#047857}
   .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#0f172a;border:1px solid #e2e8f0;font-size:12px}
   .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 </style></head><body>
@@ -53,10 +54,7 @@ emit_html_start() {
 HTML
 }
 
-emit_html_end() {
-  local f="$1"
-  echo "</body></html>" >> "$f"
-}
+emit_html_end() { echo "</body></html>" >> "$1"; }
 
 emit_card() {
   local f="$1" path="$2" subject="$3" flags="$4" policy_list="$5"
@@ -80,15 +78,8 @@ emit_block() {
   echo "  </pre>" >> "$f"
 }
 
-emit_notes() {
-  local f="$1" note="$2"
-  echo "  <div class=\"note\">$note</div>" >> "$f"
-}
-
-emit_card_close() {
-  local f="$1"
-  echo "</div>" >> "$f"
-}
+emit_notes() { echo "  <div class=\"note\">$2</div>" >> "$1"; }
+emit_card_close() { echo "</div>" >> "$1"; }
 
 # Parse args
 ARGS=()
@@ -104,7 +95,6 @@ while (( "$#" )); do
 done
 if [ ${#ARGS[@]} -eq 0 ]; then usage; exit 1; fi
 
-# Load ESC13 danger OIDs
 declare -A DANGER_OIDS
 if [[ -n "$DANGER_OIDS_FILE" && -f "$DANGER_OIDS_FILE" ]]; then
   while read -r line; do
@@ -113,30 +103,12 @@ if [[ -n "$DANGER_OIDS_FILE" && -f "$DANGER_OIDS_FILE" ]]; then
   done < "$DANGER_OIDS_FILE"
 fi
 
-collect_files() {
-  local p="$1"
-  if [ -d "$p" ]; then
-    find "$p" -type f \( -iname "*.cer" -o -iname "*.crt" -o -iname "*.pem" -o -iname "*.der" \)
-  else
-    echo "$p"
-  fi
-}
+collect_files() { local p="$1"; if [ -d "$p" ]; then find "$p" -type f \( -iname "*.cer" -o -iname "*.crt" -o -iname "*.pem" -o -iname "*.der" \); else echo "$p"; fi; }
 
-openssl_text() {
-  local f="$1"
-  if openssl x509 -in "$f" -text -noout 2>/dev/null; then
-    return 0
-  else
-    openssl x509 -in "$f" -inform der -text -noout 2>/dev/null
-  fi
-}
+openssl_text() { local f="$1"; if openssl x509 -in "$f" -text -noout 2>/dev/null; then return 0; else openssl x509 -in "$f" -inform der -text -noout 2>/dev/null; fi; }
 
-block() { # print lines from marker up to N lines
-  local dump="$1" marker="$2" count="${3:-12}"
-  echo "$dump" | sed -n "/$marker/,+${count}p"
-}
+block() { local dump="$1" marker="$2" count="${3:-12}"; echo "$dump" | sed -n "/$marker/,+${count}p"; }
 
-# HTML header
 [[ -n "$HTML_OUT" ]] && emit_html_start "$HTML_OUT"
 
 check_file() {
@@ -157,30 +129,33 @@ check_file() {
   [[ -n "$subject" ]] && echo "  Subject: ${subject# *}"
 
   local flags_arr=()
-  local san_block="$(block "$dump" "Subject Alternative Name" 6)"
-  local eku_block="$(block "$dump" "Extended Key Usage" 4)"
-  local pol_block="$(block "$dump" "Certificate Policies" 12)"
+  local san_block="$(block "$dump" 'Subject Alternative Name' 6)"
+  local eku_block="$(block "$dump" 'Extended Key Usage' 4)"
+  local pol_block="$(block "$dump" 'Certificate Policies' 12)"
   local app_pol_block="$(block "$dump" "$OID_APP_POLICIES" 4)"
 
-  # ESC3
+  # === ESC2: Any Purpose EKU OR missing EKU ===
+  if [[ -n "$eku_block" ]] && echo "$eku_block" | grep -Eq "Any Purpose|$OID_ANY_PURPOSE"; then
+    flags_arr+=("ESC2")
+    echo "  ESC2: Any Purpose EKU present ($OID_ANY_PURPOSE)."
+  elif ! echo "$dump" | grep -q 'Extended Key Usage'; then
+    flags_arr+=("ESC2" "ESC9")
+    echo "  ESC2/ESC9: No EKU extension → implicitly any purpose."
+  fi
+
+  # ESC3: Request Agent EKU
   if echo "$dump" | grep -q "$OID_REQUEST_AGENT"; then
     flags_arr+=("ESC3")
     echo "  ESC3: Request Agent EKU present."
   fi
 
-  # ESC6
+  # ESC6: UPN SAN present
   if echo "$dump" | grep -q "$OID_UPN"; then
     flags_arr+=("ESC6")
     echo "  ESC6: UPN SAN present."
   fi
 
-  # ESC9
-  if ! echo "$dump" | grep -q 'Extended Key Usage'; then
-    flags_arr+=("ESC9")
-    echo "  ESC9: No EKU (implicitly any purpose)."
-  fi
-
-  # ESC10 suspected
+  # ESC10 suspected (privileged-looking identities)
   local PRIV_HIT=""
   if echo "$dump" | grep -Eqi "$PRIV_REGEX"; then
     flags_arr+=("ESC10?")
@@ -188,32 +163,27 @@ check_file() {
     echo "  ESC10 suspected: privileged-looking Subject/SAN."
   fi
 
-  # ESC13
+  # ESC13: policy OIDs (user-provided danger list)
   local pol_oids=""
   if [[ -n "$pol_block" ]]; then
-    pol_oids="$(echo "$pol_block" | grep -Eo '([0-9]+\.)+[0-9]+' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+    pol_oids="$(echo "$pol_block" | grep -Eo '([0-9]+\.)+[0-9]+' | sort -u | tr '\n' ' ' | sed 's/ $//' )"
     if [[ -n "$pol_oids" ]]; then
-      for oid in $pol_oids; do
-        if [[ -n "${DANGER_OIDS[$oid]+x}" ]]; then
-          flags_arr+=("ESC13")
-          break
-        fi
-      done
+      for oid in $pol_oids; do if [[ -n "${DANGER_OIDS[$oid]+x}" ]]; then flags_arr+=("ESC13"); break; fi; done
       echo "  Policies present: $pol_oids"
     fi
   fi
 
-  # ESC15
+  # ESC15: Application Policies + clientAuth
   if echo "$dump" | grep -q "$OID_APP_POLICIES"; then
     if echo "$dump" | grep -q "$OID_CLIENTAUTH"; then
       flags_arr+=("ESC15")
-      echo "  ESC15: App Policies include clientAuth."
+      echo "  ESC15: Application Policies include clientAuth."
     else
       echo "  Application Policies present (review contents)."
     fi
   fi
 
-  # ESC1 suspected (privileged UPN + assumption of enrollee-supplied subject)
+  # ESC1 suspected (priv UPN + template assumption)
   if echo "$dump" | grep -q "$OID_UPN" && [[ -n "$PRIV_HIT" ]]; then
     flags_arr+=("ESC1?")
   fi
